@@ -136,10 +136,11 @@ One last note here: regardless of the IDE used, every submitted project must
 still be compilable with cmake and make./
 
 ## Write up
-###Implementation
 
 The [code in the main function](src/main.cpp) is an implementation of the following state machine:
 
-![GitHub Logo](/images/state_machine.png)
+![Path planning state machine](/images/state_machine.png)
 
-This state machine consists of a "starting state", a "lane keeping" state and two "lane change" states. The transitions from the "keep lane" state to the "lane change" states are triggered if a car is within a predefined range in front of the ego car and if a lane change is possible. If possible, a left lane change is prioritized over a right lane change. No seperate "prepare lane change" state were implemented for this simplified simulation scenario. For a detailed description of the implementation, please refer to the [commented code](src/main.cpp).
+This state machine consists of a "starting state", a "lane keeping" state and two "lane change" states. The transitions from the "keep lane" state to the "lane change" states are triggered if a car is within a predefined range in front of the ego car and if a lane change is possible. If possible, a left lane change is prioritized over a right lane change. No seperate "prepare lane change" states were implemented for this simplified simulation scenario.
+The trajectory is calculated in two main steps. In a first step, a spline curve is used to calculate the actual trajectory. In a second step, a number of equidistant points are extracted along this spline curve, which are then passed as path points to the simulator. A spline curve based on three knots whith a length proportional to the current car's velocity proves to be sufficient, to prevent jerk in any direction. 
+For a detailed description of the implementation, please refer to the [commented code](src/main.cpp).
