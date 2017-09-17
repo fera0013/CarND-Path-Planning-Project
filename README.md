@@ -134,3 +134,12 @@ that's just a guess.
 
 One last note here: regardless of the IDE used, every submitted project must
 still be compilable with cmake and make./
+
+## Write up
+###Implementation
+
+The [code in the main function](src/main.cpp) is an implementation of the following state machine:
+
+![GitHub Logo](/images/state_machine.png)
+
+This state machine consists of a "starting state", a "lane keeping" state and two "lane change" states. The transitions from the "keep lane" state to the "lane change" states are triggered if a car is within a predefined range in front of the ego car and if a lane change is possible. If possible, a left lane change is prioritized over a right lane change. No seperate "prepare lane change" state were implemented for this simplified simulation scenario. For a detailed description of the implementation, please refer to the [commented code](src/main.cpp).
