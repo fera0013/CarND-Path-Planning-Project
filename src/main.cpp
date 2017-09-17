@@ -440,10 +440,10 @@ int main() {
 							///ToDo: Introduce a "prepare lane change" state
 							new_target_lane = my_lane + 1;
 						}
-//5.3: Reduce speed to avoid crashing into car ahead
+//5.2: Reduce speed to avoid crashing into car ahead
 						ref_vel -= .224;
 					}
-//5.4: If lane is free, try to reach reference velocity
+//5.3: If lane is free, try to reach reference velocity
 					else if (ref_vel < 49.5)
 					{
 						ref_vel += .224;
