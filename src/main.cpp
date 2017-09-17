@@ -216,6 +216,113 @@ vector<double> JMT(vector< double> start, vector <double> end, double T)
 
 }
 
+struct Vehicle {
+	double x;
+	double y;
+	double d;
+	double s;
+	double v;
+	int lane_number;
+};
+
+// Convert d-value to corresponding lane number
+int convertDToLaneNumber(double d) {
+	if (d < 4.0) { return 0; }
+	if (d >= 4.0 and d < 8.0) { return 1; }
+	if (d > 8.0) { return 2; }
+	return -1;
+}
+// convert lane number to corresponding d-value
+double convertLaneNumberToD(int lane_number) {
+	if (lane_number == 0) { return 2.0; }
+	if (lane_number == 1) { return 6.0; }
+	if (lane_number == 2) { return 10.0; }
+	return 14.0;
+}
+
+std::map<int, std::vector<Vehicle>> map_other_cars_to_their_lanes(const nlohmann::basic_json<> &sensor_fusion, int target_lane, double my_car_s)
+{
+	std::map<int, std::vector<Vehicle>> other_cars;
+	for (auto sensor_values : sensor_fusion)
+	{
+		double vx = sensor_values[3];
+		double vy = sensor_values[4];
+		double v = sqrt(vx*vx + vy*vy);
+		double s = sensor_values[5];
+		float d = sensor_values[6];
+		auto lane_number = convertDToLaneNumber(d);
+		Vehicle other_car{
+			sensor_values[1],
+			sensor_values[2],
+			d,
+			s,
+			v,
+			lane_number
+		};
+		other_cars[other_car.lane_number].push_back(other_car);
+	}
+	return other_cars;
+}
+
+bool inline another_car_is_within_range(Vehicle my_car,
+	int lane_number,
+	double lower_bound_relative_to_my_car,
+	double upper_bound_relative_to_my_car,
+	const std::map<int,std::vector<Vehicle>> &other_cars)
+{
+
+	if (other_cars.find(lane_number) != other_cars.end())
+	{
+		auto absolute_upper = my_car.s + upper_bound_relative_to_my_car;
+		auto absolute_lower = my_car.s + lower_bound_relative_to_my_car;
+		for (const auto other_car : other_cars.at(lane_number))
+		{
+			if (other_car.s<absolute_upper&&other_car.s>absolute_lower)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool inline can_change_to_left_lane(Vehicle my_car,
+	const std::map<int, std::vector<Vehicle>> &other_cars,
+	double relative_lower_bound_of_minimal_gap = 30,
+	double relative_upper_bound_of_minimal_gap = -30)
+{
+	if (my_car.lane_number - 1 < 0)
+	{
+		return false;
+	}
+	else
+	{
+		return another_car_is_within_range(my_car,
+			my_car.lane_number - 1,
+			relative_lower_bound_of_minimal_gap,
+			relative_upper_bound_of_minimal_gap,
+			other_cars);
+	};
+}
+bool inline can_change_to_right_lane(Vehicle my_car,
+	const std::map<int, std::vector<Vehicle>> &other_cars,
+	double relative_lower_bound_of_minimal_gap = 30,
+	double relative_upper_bound_of_minimal_gap = -30)
+{
+	if (my_car.lane_number + 1 > 2)
+	{
+		return false;
+	}
+	else
+	{
+		return another_car_is_within_range(my_car,
+			my_car.lane_number + 1,
+			relative_lower_bound_of_minimal_gap,
+			relative_upper_bound_of_minimal_gap,
+			other_cars);
+	};
+}
+
 
 int main() {
 	uWS::Hub h;
@@ -256,11 +363,11 @@ int main() {
 	}
 
 	//Start in lane 1
-	int target_lane = 1;
+	int my_lane = 1;
 	//The reference velocity
 	double ref_vel = 0.0;
 
-	h.onMessage([&ref_vel, &target_lane, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+	h.onMessage([&ref_vel, &my_lane, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
 		uWS::OpCode opCode) {
 		// "42" at the start of the message means there's a websocket message event.
 		// The 4 signifies a websocket message
@@ -268,17 +375,12 @@ int main() {
 		//auto sdata = string(data).substr(0, length);
 		//cout << sdata << endl;
 		if (length && length > 2 && data[0] == '4' && data[1] == '2') {
-
 			auto s = hasData(string(data));
-
 			if (s.str() != "") {
 				auto j = json::parse(s);
-
 				string event = j[0].get<string>();
-
 				if (event == "telemetry") {
 //1: Get the current state of the main car 
-
 					// j[1] is the data JSON object
 					// Main car's localization Data
 					double car_x = j[1]["x"];
@@ -287,10 +389,15 @@ int main() {
 					double car_d = j[1]["d"];
 					double car_yaw = j[1]["yaw"];
 					double car_speed = j[1]["speed"];
-
+					Vehicle my_car{
+						car_x,
+						car_y,
+						car_d,
+						my_car_s,
+						car_speed,
+						my_lane
+					};
 //2: Get the previous path and the point up to which the car followed the previous path
-
-
 					// Previous path data given to the Planner
 					auto previous_path_x = j[1]["previous_path_x"];
 					auto previous_path_y = j[1]["previous_path_y"];
@@ -309,80 +416,48 @@ int main() {
 					{
 						my_car_s = end_path_s;
 					}
-
-//5: Iterate over the other cars to check their relative position to the main car
-
-					bool too_close = false;
-					std::map<int, std::vector<std::vector<double>>> vicinity_cars;
-					for (auto other_car : sensor_fusion)
+					auto other_cars = map_other_cars_to_their_lanes(sensor_fusion, my_lane, my_car_s);
+//5: Check if my lane is free and take actions if it is not
+//5.1: If a car is in front, try to change lanes
+					if (another_car_is_within_range(my_car,
+						my_lane,
+						0,
+						30,
+						other_cars))
 					{
-						double vx = other_car[3];
-						double vy = other_car[4];
-						double other_car_speed = sqrt(vx*vx + vy*vy);
-						double other_car_s = other_car[5];
-						float d = other_car[6];
-
-//5.1: Iterate over the lane to map the other cars to their lanes
-						for (int lane = 0; lane < 3; lane++)
+						auto new_target_lane = my_lane;
+//5.1.1: Try to change to left lane first, if possible
+						if (can_change_to_left_lane(my_car,
+							other_cars))
 						{
-//5.1.1: If the other car is less than 30 miles in front of the main car, set the "too_close" flag
-							if (lane == target_lane)
-							{
-								if (d < (2 + 4 * lane + 2) && d>(2 + 4 * lane - 2))
-								{
-									if ((other_car_s > my_car_s) && ((other_car_s - my_car_s) < 30))
-									{
-										too_close = true;
-									}
-								}
-							}
-							else
-							{
-//5.1.2: If the other car is on another lane and within a critical collision range in case of a lane change, add it to the map of cars in the immediate vicinity
-								if (abs(other_car_s - my_car_s) < 15)
-								{
-									vicinity_cars[lane].push_back(other_car);
-								}
-							}
+                            ///ToDo: Introduce a "prepare lane change" state
+							new_target_lane = my_lane - 1;
 						}
-					}
-//6: Take necessary actions if another car is within a critical range in front of the main car
-					if (too_close)
-					{
-						auto new_target_lane = target_lane;
-//6.1: If the main car is not on the outer left lane, set the lane to the left as the new target lane
-						if (target_lane > 0)
+//5.1.2: If change to left lane is not possible, try to change to right lane
+						else if (can_change_to_right_lane(my_car,
+							other_cars))
 						{
-							new_target_lane = target_lane - 1;
+							///ToDo: Introduce a "prepare lane change" state
+							new_target_lane = my_lane + 1;
 						}
-//6.2: If the main car is on the outer left lane, set the lane to the right as the new target lane
-						else
-						{
-							new_target_lane = target_lane + 1;
-						}
-//6.3: If there is no car within a critical range, change to the new target lane
-						bool target_lane_free = (vicinity_cars.find(new_target_lane) == vicinity_cars.end());
-						if (target_lane_free)
-						{
-							target_lane = new_target_lane;
-						}
-//6.4: Reduce speed
+//5.3: Reduce speed to avoid crashing into car ahead
 						ref_vel -= .224;
 					}
+//5.4: If lane is free, try to reach reference velocity
 					else if (ref_vel < 49.5)
 					{
 						ref_vel += .224;
 					}
-//8: Create a spline as reference trajectory for the main car
-//8.1: Create a list of widely spaced (x,y) waypoints, evenly spaced at a distance of 30m
+//6: Create a spline as reference trajectory for the main car
+//6.1: Create a list of widely spaced (x,y) waypoints, evenly spaced at a distance of 30m
 					std::vector<double> ptsx;
 					std::vector<double> ptsy;
-//8.2: Create reference x, y, yaw states 
+//6.2: Create reference x, y, yaw states 
 					double ref_x = car_x;
 					double ref_y = car_y;
 					double ref_yaw = deg2rad(car_yaw);
 
-//8.3: If previous path is almost empty, use the car as starting reference
+//6.3: If previous path is almost empty, use the car as starting reference
 					if (prev_size < 2)
 					{
 						//Use two points that make the path tanget to the car
@@ -393,7 +468,7 @@ int main() {
 						ptsy.push_back(prev_car_y);
 						ptsy.push_back(car_y);
 					}
-//8.4: If the previous path is not almost empty, use the previous path's end point as starting reference
+//6.4: If the previous path is not almost empty, use the previous path's end point as starting reference
 					else
 					{
 						//Redefine reference state as previous path and point
@@ -408,10 +483,10 @@ int main() {
 						ptsy.push_back(ref_y_prev);
 						ptsy.push_back(ref_y);
 					}
-//8.5: In Frenet add 3 evenly spaced waypoints 30 m apart from each others starting from the starting reference
-					vector<double> next_wp0 = getXY(my_car_s + 30, (2 + 4 * target_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-					vector<double> next_wp1 = getXY(my_car_s + 60, (2 + 4 * target_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-					vector<double> next_wp2 = getXY(my_car_s + 90, (2 + 4 * target_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+//6.5: In Frenet add 3 evenly spaced waypoints 30 m apart from each others starting from the starting reference
+					vector<double> next_wp0 = getXY(my_car_s + 30, (2 + 4 * my_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+					vector<double> next_wp1 = getXY(my_car_s + 60, (2 + 4 * my_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+					vector<double> next_wp2 = getXY(my_car_s + 90, (2 + 4 * my_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
 					ptsx.push_back(next_wp0[0]);
 					ptsx.push_back(next_wp1[0]);
@@ -420,7 +495,7 @@ int main() {
 					ptsy.push_back(next_wp0[1]);
 					ptsy.push_back(next_wp1[1]);
 					ptsy.push_back(next_wp2[1]);
-//8.6: Convert points to car coordinates, to make the math easier
+//6.6: Convert points to car coordinates, to make the math easier
 					for (int i = 0; i < ptsx.size(); i++)
 					{
 						double shift_x = ptsx[i] - ref_x;
@@ -428,28 +503,25 @@ int main() {
 						ptsx[i] = (shift_x * cos(0 - ref_yaw) - shift_y*sin(0 - ref_yaw));
 						ptsy[i] = (shift_x * sin(0 - ref_yaw) + shift_y*cos(0 - ref_yaw));
 					}
-//8.7: Create a spline
+//6.7: Create a spline
 					tk::spline s;
-
 					//set (x,y) points to the spline
 					s.set_points(ptsx, ptsy);
-
-//9: Calculate the actual (x,y) points along the spline, to pass to the planner
+//7: Calculate the actual (x,y) points along the spline, to pass to the planner
 					vector<double> next_x_vals;
 					vector<double> next_y_vals;
-
-//9.1: Start with all the previous path points from last update
+//7.1: Start with all the previous path points from last update
 					for (int i = 0; i < previous_path_x.size(); i++)
 					{
 						next_x_vals.push_back(previous_path_x[i]);
 						next_y_vals.push_back(previous_path_y[i]);
 					}
-//9.2: Calculate how to break up spline points so that we travel at our desired reference velocity
+//7.2: Calculate how to break up spline points so that we travel at our desired reference velocity
 					double target_x = 30.0;
 					double target_y = s(target_x);
 					double target_dist = sqrt((target_x)*(target_x)+(target_y)*(target_y));
 					double x_add_on = 0;
-//9:3: Fill up the rest of our path planner after filling it with previous points, here we will always output 50 points
+//7.3: Fill up the rest of our path planner after filling it with previous points, here we will always output 50 points
 					for (int i = 1; i <= 50 - previous_path_x.size(); i++)
 					{
 						//Attention: Conversion to miles per hour
@@ -459,7 +531,7 @@ int main() {
 						x_add_on = x_point;
 						double x_ref = x_point;
 						double y_ref = y_point;
-//9.4: Rotate back to global (map) coordinates
+//7.4: Rotate back to global (map) coordinates
 						x_point = (x_ref*cos(ref_yaw) - y_ref*sin(ref_yaw));
 						y_point = (x_ref*sin(ref_yaw) + y_ref*cos(ref_yaw));
 						x_point += ref_x;
@@ -467,17 +539,13 @@ int main() {
 						next_x_vals.push_back(x_point);
 						next_y_vals.push_back(y_point);
 					}
-//10: Pass the new path to the planner 
+//8: Pass the new path to the planner 
 					json msgJson;
-
 					msgJson["next_x"] = next_x_vals;
 					msgJson["next_y"] = next_y_vals;
-
 					auto msg = "42[\"control\"," + msgJson.dump() + "]";
-
 					//this_thread::sleep_for(chrono::milliseconds(1000));
 					ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-
 				}
 			}
 			else {
